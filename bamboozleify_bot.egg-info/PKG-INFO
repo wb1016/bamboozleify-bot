@@ -1,0 +1,9 @@
+Metadata-Version: 2.4
+Name: bamboozleify-bot
+Version: 0.1.0
+Summary: Anonymous chat proxy bot for Discord
+Requires-Python: >=3.14
+License-File: LICENSE
+Requires-Dist: discord.py>=2.7
+Requires-Dist: aiosqlite>=0.20
+Dynamic: license-file

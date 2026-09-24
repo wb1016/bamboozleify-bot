@@ -1,0 +1,17 @@
+LICENSE
+README.md
+pyproject.toml
+bamboozleify_bot/__init__.py
+bamboozleify_bot/__main__.py
+bamboozleify_bot/bot.py
+bamboozleify_bot/config.py
+bamboozleify_bot/db.py
+bamboozleify_bot/utils.py
+bamboozleify_bot.egg-info/PKG-INFO
+bamboozleify_bot.egg-info/SOURCES.txt
+bamboozleify_bot.egg-info/dependency_links.txt
+bamboozleify_bot.egg-info/requires.txt
+bamboozleify_bot.egg-info/top_level.txt
+bamboozleify_bot/cogs/__init__.py
+bamboozleify_bot/cogs/anon.py
+bamboozleify_bot/cogs/mod.py

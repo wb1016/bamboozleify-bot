@@ -1,0 +1,16 @@
+[project]
+name = "bamboozleify-bot"
+version = "0.1.0"
+description = "Anonymous chat proxy bot for Discord"
+requires-python = ">=3.14"
+dependencies = [
+    "discord.py>=2.7",
+    "aiosqlite>=0.20",
+]
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["bamboozleify_bot*"]
