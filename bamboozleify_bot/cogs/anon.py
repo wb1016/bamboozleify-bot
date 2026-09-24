@@ -10,6 +10,8 @@ from discord import app_commands
 from discord.ext import commands
 
 from .. import config
+from ..db import AnonMessageRecord
+from ..i18n import is_korean, t
 from ..utils import is_mod, send_mod_log
 
 if TYPE_CHECKING:
@@ -18,11 +20,13 @@ if TYPE_CHECKING:
 MAX_FILES = 10
 
 
-async def check_can_post(bot: BamboozleifyBot, guild_id: int, user_id: int) -> Optional[str]:
+async def check_can_post(
+    bot: BamboozleifyBot, guild_id: int, user_id: int, locale: Optional[discord.Locale] = None
+) -> Optional[str]:
     """Return an error message if the user may not post right now, else None."""
     block = await bot.db.get_block(guild_id, user_id)
     if block is not None:
-        return "You are blocked from sending anonymous messages in this server."
+        return t(locale, "You are blocked from sending anonymous messages in this server.")
     cfg = await bot.db.get_config(guild_id)
     if cfg.cooldown_seconds > 0:
         last = await bot.db.get_last_post(guild_id, user_id)
@@ -30,9 +34,10 @@ async def check_can_post(bot: BamboozleifyBot, guild_id: int, user_id: int) -> O
             retry_at = last + cfg.cooldown_seconds
             if time.time() < retry_at:
                 retry_dt = datetime.fromtimestamp(retry_at, tz=timezone.utc)
-                return (
-                    "You are sending anonymous messages too fast — "
-                    f"try again {discord.utils.format_dt(retry_dt, style='R')}."
+                return t(
+                    locale,
+                    "You are sending anonymous messages too fast - try again {retry}.",
+                    retry=discord.utils.format_dt(retry_dt, style="R"),
                 )
     return None
 
@@ -53,12 +58,26 @@ class AnonModal(discord.ui.Modal, title="Anonymous message"):
         component=discord.ui.FileUpload(max_values=MAX_FILES, required=False),
     )
 
-    def __init__(self, bot: BamboozleifyBot, channel: discord.abc.Messageable) -> None:
+    def __init__(
+        self,
+        bot: BamboozleifyBot,
+        channel: discord.abc.Messageable,
+        locale: Optional[discord.Locale] = None,
+    ) -> None:
         self.bot = bot
         self.channel = channel
+        self.locale = locale
         super().__init__()
+        self.title = t(locale, "Anonymous message")
+        self.text.text = t(locale, "Message")
+        self.text.component.placeholder = t(locale, "What should be sent?")
+        self.media.text = t(locale, "Media (optional)")
+        self.media.description = t(
+            locale, "Photos, a video, or audio. Up to {n} files.", n=MAX_FILES
+        )
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        locale = interaction.locale
         assert isinstance(self.text.component, discord.ui.TextInput)
         assert isinstance(self.media.component, discord.ui.FileUpload)
         text_value = self.text.component.value.strip()
@@ -66,7 +85,7 @@ class AnonModal(discord.ui.Modal, title="Anonymous message"):
 
         if not text_value and not attachments:
             await interaction.response.send_message(
-                "Write some text or attach at least one file.", ephemeral=True
+                t(locale, "Write some text or attach at least one file."), ephemeral=True
             )
             return
 
@@ -75,7 +94,7 @@ class AnonModal(discord.ui.Modal, title="Anonymous message"):
         if guild_id is None:
             return
 
-        error = await check_can_post(self.bot, guild_id, user_id)
+        error = await check_can_post(self.bot, guild_id, user_id, locale)
         if error is not None:
             await interaction.response.send_message(error, ephemeral=True)
             return
@@ -93,7 +112,11 @@ class AnonModal(discord.ui.Modal, title="Anonymous message"):
 
         if not text_value and not files:
             await interaction.response.send_message(
-                "Every attachment was over the 10 MiB bot upload limit, so there is nothing to send.",
+                t(
+                    locale,
+                    "Every attachment was over the 10 MiB bot upload limit, "
+                    "so there is nothing to send.",
+                ),
                 ephemeral=True,
             )
             return
@@ -102,11 +125,11 @@ class AnonModal(discord.ui.Modal, title="Anonymous message"):
             message = await self.channel.send(
                 content=text_value or None,
                 files=files or None,
-                view=AnonMessageView(self.bot),
+                view=AnonMessageView(self.bot, locale),
             )
         except discord.DiscordException as exc:
             await interaction.response.send_message(
-                f"Could not send the message: {exc}", ephemeral=True
+                t(locale, "Could not send the message: {exc}", exc=exc), ephemeral=True
             )
             return
 
@@ -118,44 +141,76 @@ class AnonModal(discord.ui.Modal, title="Anonymous message"):
         )
         await self.bot.db.set_last_post(guild_id, user_id)
 
-        confirmation = f"Sent anonymously: {message.jump_url}"
+        confirmation = t(locale, "Sent anonymously: {url}", url=message.jump_url)
         if skipped:
-            confirmation += f"\n-# {skipped} attachment(s) skipped (over the 10 MiB bot upload limit)."
+            confirmation += "\n" + t(
+                locale, "-# {n} attachment(s) skipped (over the 10 MiB bot upload limit).", n=skipped
+            )
         await interaction.response.send_message(confirmation, ephemeral=True)
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
         if interaction.response.is_done():
-            await interaction.followup.send("Something went wrong.", ephemeral=True)
+            await interaction.followup.send(
+                t(interaction.locale, "Something went wrong."), ephemeral=True
+            )
         else:
-            await interaction.response.send_message("Something went wrong.", ephemeral=True)
+            await interaction.response.send_message(
+                t(interaction.locale, "Something went wrong."), ephemeral=True
+            )
 
 
 class AnonMessageView(discord.ui.View):
     """Persistent buttons attached to every published anonymous message."""
 
-    def __init__(self, bot: BamboozleifyBot) -> None:
+    def __init__(self, bot: BamboozleifyBot, locale: Optional[discord.Locale] = None) -> None:
         self.bot = bot
+        self.locale = locale
         super().__init__(timeout=None)
+        if is_korean(locale):
+            for child in self.children:
+                if child.custom_id == "bamboozleify:see_op":
+                    child.label = t(locale, "See OP")
+                elif child.custom_id == "bamboozleify:moderation":
+                    child.label = t(locale, "Moderation")
+
+    async def _deny_if_not_mod(self, interaction: discord.Interaction) -> bool:
+        guild = interaction.guild
+        if guild is None:
+            return False
+        cfg = await self.bot.db.get_config(guild.id)
+        if not is_mod(interaction, cfg.mod_role_id):
+            await interaction.response.send_message(
+                t(interaction.locale, "Only moderators can use this."), ephemeral=True
+            )
+            return False
+        return True
+
+    async def _get_record(
+        self, interaction: discord.Interaction
+    ) -> Optional[AnonMessageRecord]:
+        record = await self.bot.db.get_anon_message(interaction.message.id)
+        if record is None or record.author_id is None:
+            await interaction.response.send_message(
+                t(
+                    interaction.locale,
+                    "I don't know who sent this - the identity may have been purged "
+                    "or the record is missing.",
+                ),
+                ephemeral=True,
+            )
+            return None
+        return record
 
     @discord.ui.button(label="See OP", emoji="👁️", custom_id="bamboozleify:see_op")
     async def see_op(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         guild = interaction.guild
-        if guild is None:
+        if guild is None or not await self._deny_if_not_mod(interaction):
             return
-        cfg = await self.bot.db.get_config(guild.id)
-        if not is_mod(interaction, cfg.mod_role_id):
-            await interaction.response.send_message(
-                "Only moderators can use this.", ephemeral=True
-            )
+        record = await self._get_record(interaction)
+        if record is None:
             return
-        record = await self.bot.db.get_anon_message(interaction.message.id)
-        if record is None or record.author_id is None:
-            await interaction.response.send_message(
-                "I don't know who sent this — the identity may have been purged or the record is missing.",
-                ephemeral=True,
-            )
-            return
+        locale = interaction.locale
 
         member = guild.get_member(record.author_id)
         if member is not None:
@@ -165,17 +220,17 @@ class AnonMessageView(discord.ui.View):
                 user = await self.bot.fetch_user(record.author_id)
                 username = str(user)
             except discord.NotFound:
-                username = "unknown (account may be deleted)"
+                username = t(locale, "unknown (account may be deleted)")
         posted_at = datetime.fromtimestamp(record.created_at, tz=timezone.utc)
 
         embed = discord.Embed(
-            title="Anonymous message — original poster",
+            title=t(locale, "Anonymous message - original poster"),
             color=discord.Color.blurple(),
         )
-        embed.add_field(name="User", value=f"<@{record.author_id}>", inline=True)
-        embed.add_field(name="Username", value=username, inline=True)
-        embed.add_field(name="User ID", value=str(record.author_id), inline=True)
-        embed.add_field(name="Posted", value=discord.utils.format_dt(posted_at, style="R"))
+        embed.add_field(name=t(locale, "User"), value=f"<@{record.author_id}>", inline=True)
+        embed.add_field(name=t(locale, "Username"), value=username, inline=True)
+        embed.add_field(name=t(locale, "User ID"), value=str(record.author_id), inline=True)
+        embed.add_field(name=t(locale, "Posted"), value=discord.utils.format_dt(posted_at, style="R"))
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @discord.ui.button(
@@ -184,27 +239,18 @@ class AnonMessageView(discord.ui.View):
     )
     async def moderation(self, interaction: discord.Interaction, button: discord.ui.Button) -> None:
         guild = interaction.guild
-        if guild is None:
+        if guild is None or not await self._deny_if_not_mod(interaction):
             return
-        cfg = await self.bot.db.get_config(guild.id)
-        if not is_mod(interaction, cfg.mod_role_id):
-            await interaction.response.send_message(
-                "Only moderators can use this.", ephemeral=True
-            )
-            return
-        record = await self.bot.db.get_anon_message(interaction.message.id)
-        if record is None or record.author_id is None:
-            await interaction.response.send_message(
-                "I don't know who sent this — the identity may have been purged or the record is missing.",
-                ephemeral=True,
-            )
+        record = await self._get_record(interaction)
+        if record is None:
             return
         await interaction.response.send_message(
-            f"Moderation for <@{record.author_id}> (`{record.author_id}`)",
+            t(interaction.locale, "Moderation for {user}", user=f"<@{record.author_id}>"),
             view=ModerationPanel(
                 self.bot,
                 author_id=record.author_id,
                 message_link=interaction.message.jump_url,
+                locale=interaction.locale,
             ),
             ephemeral=True,
         )
@@ -213,11 +259,23 @@ class AnonMessageView(discord.ui.View):
 class ModerationPanel(discord.ui.View):
     """Ephemeral panel with timeout / block / cancel actions."""
 
-    def __init__(self, bot: BamboozleifyBot, *, author_id: int, message_link: str) -> None:
+    def __init__(
+        self,
+        bot: BamboozleifyBot,
+        *,
+        author_id: int,
+        message_link: str,
+        locale: Optional[discord.Locale] = None,
+    ) -> None:
         self.bot = bot
         self.author_id = author_id
         self.message_link = message_link
+        self.locale = locale
         super().__init__(timeout=600)
+        if is_korean(locale):
+            self.timeout_button.label = t(locale, "Timeout")
+            self.block_button.label = t(locale, "Block permanently")
+            self.cancel_button.label = t(locale, "Cancel")
 
     async def interaction_check(self, interaction: discord.Interaction) -> bool:
         guild = interaction.guild
@@ -226,7 +284,7 @@ class ModerationPanel(discord.ui.View):
         cfg = await self.bot.db.get_config(guild.id)
         if not is_mod(interaction, cfg.mod_role_id):
             await interaction.response.send_message(
-                "Only moderators can use this.", ephemeral=True
+                t(interaction.locale, "Only moderators can use this."), ephemeral=True
             )
             return False
         return True
@@ -244,18 +302,23 @@ class ModerationPanel(discord.ui.View):
                 member = await guild.fetch_member(self.author_id)
             except discord.NotFound:
                 await interaction.response.send_message(
-                    "That user is no longer in this server — use **Block permanently** instead.",
+                    t(
+                        self.locale,
+                        "That user is no longer in this server - use **Block permanently** instead.",
+                    ),
                     ephemeral=True,
                 )
                 return
         if not guild.me.guild_permissions.moderate_members:
             await interaction.response.send_message(
-                "I need the **Moderate Members** permission to time people out.",
+                t(self.locale, "I need the **Moderate Members** permission to time people out."),
                 ephemeral=True,
             )
             return
         await interaction.response.send_modal(
-            TimeoutModal(self.bot, member=member, message_link=self.message_link)
+            TimeoutModal(
+                self.bot, member=member, message_link=self.message_link, locale=self.locale
+            )
         )
 
     @discord.ui.button(
@@ -273,6 +336,7 @@ class ModerationPanel(discord.ui.View):
                 guild_id=guild.id,
                 author_id=self.author_id,
                 message_link=self.message_link,
+                locale=self.locale,
             )
         )
 
@@ -280,7 +344,9 @@ class ModerationPanel(discord.ui.View):
     async def cancel_button(
         self, interaction: discord.Interaction, button: discord.ui.Button
     ) -> None:
-        await interaction.response.edit_message(content="Moderation panel closed.", view=None)
+        await interaction.response.edit_message(
+            content=t(self.locale, "Moderation panel closed."), view=None,
+        )
 
 
 class TimeoutModal(discord.ui.Modal, title="Timeout member"):
@@ -304,13 +370,28 @@ class TimeoutModal(discord.ui.Modal, title="Timeout member"):
         ),
     )
 
-    def __init__(self, bot: BamboozleifyBot, *, member: discord.Member, message_link: str) -> None:
+    def __init__(
+        self,
+        bot: BamboozleifyBot,
+        *,
+        member: discord.Member,
+        message_link: str,
+        locale: Optional[discord.Locale] = None,
+    ) -> None:
         self.bot = bot
         self.member = member
         self.message_link = message_link
+        self.locale = locale
         super().__init__()
+        self.title = t(locale, "Timeout member")
+        self.duration.text = t(locale, "Duration")
+        if is_korean(locale):
+            for option in self.duration.component.options:
+                option.label = t(locale, option.label)
+        self.reason.text = t(locale, "Reason (optional)")
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        locale = self.locale
         assert isinstance(self.duration.component, discord.ui.Select)
         assert isinstance(self.reason.component, discord.ui.TextInput)
         guild = interaction.guild
@@ -325,33 +406,52 @@ class TimeoutModal(discord.ui.Modal, title="Timeout member"):
             )
         except discord.Forbidden:
             await interaction.response.send_message(
-                "I could not time that member out (missing permissions or role hierarchy).",
+                t(
+                    locale,
+                    "I could not time that member out (missing permissions or role hierarchy).",
+                ),
                 ephemeral=True,
             )
             return
         except discord.HTTPException as exc:
-            await interaction.response.send_message(f"Timeout failed: {exc}", ephemeral=True)
+            await interaction.response.send_message(
+                t(locale, "Timeout failed: {exc}", exc=exc), ephemeral=True
+            )
             return
+        if seconds % 3600 == 0:
+            action = t(locale, "Timeout ({hours}h)", hours=seconds // 3600)
+        else:
+            action = t(locale, "Timeout ({seconds}s)", seconds=seconds)
         await send_mod_log(
             self.bot,
             guild,
-            action=f"Timeout ({seconds // 3600}h)" if seconds % 3600 == 0 else f"Timeout ({seconds}s)",
+            action=action,
             moderator=interaction.user,
             target_id=self.member.id,
             reason=reason,
             message_link=self.message_link,
+            locale=locale,
         )
         await interaction.response.send_message(
-            f"Timed out {self.member.mention} until {discord.utils.format_dt(until, style='R')}.",
+            t(
+                locale,
+                "Timed out {member} until {until}.",
+                member=self.member.mention,
+                until=discord.utils.format_dt(until, style="R"),
+            ),
             ephemeral=True,
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
         if interaction.response.is_done():
-            await interaction.followup.send("Something went wrong.", ephemeral=True)
+            await interaction.followup.send(
+                t(interaction.locale, "Something went wrong."), ephemeral=True
+            )
         else:
-            await interaction.response.send_message("Something went wrong.", ephemeral=True)
+            await interaction.response.send_message(
+                t(interaction.locale, "Something went wrong."), ephemeral=True
+            )
 
 
 class BlockModal(discord.ui.Modal, title="Block from anonymous messages"):
@@ -363,15 +463,25 @@ class BlockModal(discord.ui.Modal, title="Block from anonymous messages"):
     )
 
     def __init__(
-        self, bot: BamboozleifyBot, *, guild_id: int, author_id: int, message_link: str
+        self,
+        bot: BamboozleifyBot,
+        *,
+        guild_id: int,
+        author_id: int,
+        message_link: str,
+        locale: Optional[discord.Locale] = None,
     ) -> None:
         self.bot = bot
         self.guild_id = guild_id
         self.author_id = author_id
         self.message_link = message_link
+        self.locale = locale
         super().__init__()
+        self.title = t(locale, "Block from anonymous messages")
+        self.reason.text = t(locale, "Reason (optional)")
 
     async def on_submit(self, interaction: discord.Interaction) -> None:
+        locale = self.locale
         assert isinstance(self.reason.component, discord.ui.TextInput)
         reason = self.reason.component.value.strip() or None
         await self.bot.db.add_block(
@@ -382,31 +492,43 @@ class BlockModal(discord.ui.Modal, title="Block from anonymous messages"):
             await send_mod_log(
                 self.bot,
                 guild,
-                action="Permanent block",
+                action=t(locale, "Permanent block"),
                 moderator=interaction.user,
                 target_id=self.author_id,
                 reason=reason,
                 message_link=self.message_link,
+                locale=locale,
             )
         await interaction.response.send_message(
-            f"Blocked <@{self.author_id}> from using anonymous messages in this server. "
-            "`/anon-mod unblock` reverts it.",
+            t(
+                locale,
+                "Blocked {user} from using anonymous messages in this server. "
+                "`/bamboo-mod unblock` reverts it.",
+                user=f"<@{self.author_id}>",
+            ),
             ephemeral=True,
         )
 
     async def on_error(self, interaction: discord.Interaction, error: Exception) -> None:
         traceback.print_exception(type(error), error, error.__traceback__)
         if interaction.response.is_done():
-            await interaction.followup.send("Something went wrong.", ephemeral=True)
+            await interaction.followup.send(
+                t(interaction.locale, "Something went wrong."), ephemeral=True
+            )
         else:
-            await interaction.response.send_message("Something went wrong.", ephemeral=True)
+            await interaction.response.send_message(
+                t(interaction.locale, "Something went wrong."), ephemeral=True
+            )
 
 
 class AnonCog(commands.Cog):
     def __init__(self, bot: BamboozleifyBot) -> None:
         self.bot = bot
 
-    @app_commands.command(name="anon", description="Send an anonymous message to this channel")
+    @app_commands.command(
+        name="bamboo",
+        description=app_commands.locale_str("Send an anonymous message to this channel"),
+    )
     @app_commands.guild_only()
     async def anon(self, interaction: discord.Interaction) -> None:
         guild = interaction.guild
@@ -417,7 +539,8 @@ class AnonCog(commands.Cog):
             )
             return
 
-        error = await check_can_post(self.bot, guild.id, interaction.user.id)
+        locale = interaction.locale
+        error = await check_can_post(self.bot, guild.id, interaction.user.id, locale)
         if error is None:
             permissions = channel.permissions_for(guild.me)
             if not (permissions.send_messages and permissions.attach_files):
@@ -429,4 +552,4 @@ class AnonCog(commands.Cog):
             await interaction.response.send_message(error, ephemeral=True)
             return
 
-        await interaction.response.send_modal(AnonModal(self.bot, channel))
+        await interaction.response.send_modal(AnonModal(self.bot, channel, locale))

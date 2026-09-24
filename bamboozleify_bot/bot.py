@@ -10,6 +10,7 @@ from . import config
 from .cogs.anon import AnonCog, AnonMessageView
 from .cogs.mod import AnonModCog, AnonSetupCog
 from .db import Database
+from .i18n import KoreanTranslator
 
 log = logging.getLogger(__name__)
 
@@ -27,6 +28,8 @@ class BamboozleifyBot(commands.Bot):
 
     async def setup_hook(self) -> None:
         await self.db.connect()
+        # Localize command names/descriptions before the tree syncs.
+        await self.tree.set_translator(KoreanTranslator())
         # Persistent See OP / Moderation buttons survive restarts via custom_id.
         self.add_view(AnonMessageView(self))
         await self.add_cog(AnonCog(self))

@@ -4,6 +4,8 @@ from typing import Optional, TYPE_CHECKING
 
 import discord
 
+from .i18n import t
+
 if TYPE_CHECKING:
     from .bot import BamboozleifyBot
 
@@ -28,6 +30,7 @@ async def send_mod_log(
     target_id: int,
     reason: Optional[str] = None,
     message_link: Optional[str] = None,
+    locale: Optional[discord.Locale] = None,
 ) -> None:
     """Write an audit entry to the configured mod-log channel. Best effort."""
     cfg = await bot.db.get_config(guild.id)
@@ -37,16 +40,20 @@ async def send_mod_log(
     if not isinstance(channel, discord.abc.Messageable):
         return
     embed = discord.Embed(
-        title=f"Anon moderation — {action}",
+        title=t(locale, "Anon moderation - {action}", action=action),
         color=discord.Color.orange(),
         timestamp=discord.utils.utcnow(),
     )
-    embed.add_field(name="Moderator", value=f"{moderator.mention} (`{moderator.id}`)", inline=False)
-    embed.add_field(name="Target", value=f"<@{target_id}> (`{target_id}`)", inline=False)
+    embed.add_field(
+        name=t(locale, "Moderator"),
+        value=f"{moderator.mention} (`{moderator.id}`)",
+        inline=False,
+    )
+    embed.add_field(name=t(locale, "Target"), value=f"<@{target_id}> (`{target_id}`)", inline=False)
     if reason:
-        embed.add_field(name="Reason", value=reason, inline=False)
+        embed.add_field(name=t(locale, "Reason"), value=reason, inline=False)
     if message_link:
-        embed.add_field(name="Message", value=message_link, inline=False)
+        embed.add_field(name=t(locale, "Message"), value=message_link, inline=False)
     try:
         await channel.send(embed=embed)
     except discord.DiscordException:
